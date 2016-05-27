@@ -33,6 +33,18 @@ baz
 
 For now, clone or download this repo and add the `cmdy` script to your path.
 
+Set your `EDITOR` environment variable in your `.bashrc` or equivalent:
+
+```bash
+export EDITOR=vim
+```
+
+Add `~/.cmdy/cmds` to your path:
+
+```bash
+export PATH=$PATH:~/.cmdy/cmds
+```
+
 ## Usage
 
 #### `cmdy new <command> <subcommand> ... <script name>`
