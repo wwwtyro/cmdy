@@ -1,0 +1,214 @@
+#!/usr/bin/env python
+
+
+import os
+import sys
+import glob
+import json
+import stat
+import shutil
+
+from argparse import ArgumentParser
+from subprocess import check_call
+
+from lib.termcolor import cprint as _cprint
+
+def main():
+    if not os.path.isdir(dot_path()):
+        os.makedirs(dot_path())
+    if not os.path.isdir(cmd_path()):
+        os.makedirs(cmd_path())
+    if not os.path.isfile(cfg_path()):
+        cmdy_config_reset()
+    if not os.path.isdir(cmd_source()):
+        os.makedirs(cmd_source())
+
+    parser = ArgumentParser()
+    subparsers = parser.add_subparsers()
+
+    sp_run = subparsers.add_parser('run')
+    sp_run.set_defaults(func=cmdy_run)
+
+    sp_refresh = subparsers.add_parser('refresh')
+    sp_refresh.set_defaults(func=cmdy_refresh)
+
+    sp_new = subparsers.add_parser('new')
+    sp_new.set_defaults(func=cmdy_new)
+
+    sp_edit = subparsers.add_parser('edit')
+    sp_edit.set_defaults(func=cmdy_edit)
+
+    sp_remove = subparsers.add_parser('remove')
+    sp_remove.set_defaults(func=cmdy_remove)
+
+    sp_list = subparsers.add_parser('list')
+    sp_list.set_defaults(func=cmdy_list)
+
+    sp_config = subparsers.add_parser('config')
+    sp_config_subparsers = sp_config.add_subparsers()
+    sp_config_reset = sp_config_subparsers.add_parser('reset')
+    sp_config_reset.set_defaults(func=cmdy_config_reset)
+    sp_config_get = sp_config_subparsers.add_parser('get')
+    sp_config_get.set_defaults(func=cmdy_config_get)
+    sp_config_edit = sp_config_subparsers.add_parser('edit')
+    sp_config_edit.set_defaults(func=cmdy_config_edit)
+
+    args = parser.parse_known_args()
+    args[0].func(args[1])
+
+
+def dot_path():
+    return os.path.expanduser('~/.cmdy')
+
+def cmd_path():
+    return os.path.join(dot_path(), 'cmds')
+    
+def cfg_path():
+    return os.path.join(dot_path(), 'config.json')
+    
+def cfg_get():
+    try:
+        with open(cfg_path(), 'r') as f:
+            return json.load(f)
+    except:
+        bail("Couldn't open config file %s" % cfg_path())
+
+def cfg_put(cfg):
+    with open(cfg_path(), 'w') as f:
+        json.dump(cfg, f, indent=4, sort_keys=True)
+
+def cmd_source():
+    return cfg_get()['source-path']
+    
+def use_color():
+    return cfg_get()['color']
+        
+def bail(msg):
+    print "cmdy: " + msg
+    sys.exit(1)
+
+def cprint(msg, *args):
+    if use_color():
+        _cprint(msg, *args)
+    else:
+        print msg
+
+def make_executable(filepath):
+    st = os.stat(filepath)
+    os.chmod(filepath, st.st_mode | stat.S_IEXEC)                    
+
+def cmdy_config_reset(args=None):
+    cfg = {
+        "source-path": os.path.join(dot_path(), 'src'),
+        "color": True,
+    }
+    cfg_put(cfg)
+    
+
+def cmdy_config_get(args):
+    cprint(str(cfg_get()[args[0]]))
+
+
+def cmdy_config_edit(args=None):
+    editor = os.environ.get('EDITOR', 'nano')
+    check_call(editor + " " + cfg_path(), shell=True)
+
+
+def cmdy_refresh(args=None):
+    runcmd = "#!/bin/bash\n\ncmdy run %s $@\n"
+    shutil.rmtree(cmd_path())
+    os.makedirs(cmd_path())
+    topcmds = glob.glob(os.path.join(cmd_source(), '*'))
+    for cmd in topcmds:
+        cmdbase = os.path.basename(cmd)
+        cmdfile = os.path.join(cmd_path(), cmdbase)
+        if os.path.isfile(cmd):
+            if not os.access(cmd, os.X_OK):
+                continue
+            else:
+                with open(cmdfile, 'w') as f:
+                    f.write(runcmd % os.path.basename(cmd))
+                    make_executable(cmdfile)
+        elif os.path.isdir(cmd):
+                with open(cmdfile, 'w') as f:
+                    f.write(runcmd % os.path.basename(cmd))
+                    make_executable(cmdfile)
+
+
+def cmdy_run(args):
+    def recurse(args, path=None):
+        if len(args) == 0:
+            bail("That command doesn't exist.")
+        if path is None:
+            path = cmd_source()
+        run_path = os.path.join(path, args[0])
+        if os.path.isdir(run_path):
+            recurse(args[1:], run_path)
+        elif os.path.isfile(run_path):
+            if not os.access(run_path, os.X_OK):
+                bail("Found command, but it's not executable.")
+            cmd = run_path + ' ' + ' '.join(args[1:])
+            check_call(cmd, shell=True)
+        else:
+            bail("That command doesn't exist.")
+    recurse(args)
+
+
+def cmdy_new(args):
+    if len(args) == 0:
+        bail("No new command names given.")
+    new_path = cmd_source()
+    for arg in args[:-1]:
+        new_path = os.path.join(new_path, arg)
+        if os.path.isfile(new_path):
+            bail("New command conflicts with %s" % new_path)
+        if not os.path.isdir(new_path):
+            os.makedirs(new_path)
+    new_path = os.path.join(new_path, args[-1])
+    if os.path.isfile(new_path):
+        bail("That command already exists, but you can edit it with cmdy edit.")
+    open(new_path, 'w+').close()
+    editor = os.environ.get('EDITOR', 'nano')
+    check_call(editor + " " + new_path, shell=True)
+    make_executable(new_path)
+    cmdy_refresh()
+
+
+def cmdy_remove(args):
+    cmdfile = os.path.join(cmd_source(), *args)
+    if not os.path.exists(cmdfile):
+        bail("No such command.")
+    print "\n    This will delete your command and all subcommands associated with it!"
+    print "    Are you absolutely sure you want to do this?"
+    yn = raw_input("    Enter 'yes' if you really want to do this: ")
+    if yn != 'yes':
+        bail("\n    Aborting.\n")
+    if os.path.isfile(cmdfile):
+        os.remove(cmdfile)
+    else:
+        shutil.rmtree(cmdfile)
+    print "\n    Deleted.\n"
+    
+    
+def cmdy_list(args=None):
+    def recurse(_path, depth = 0):
+        g = glob.glob(os.path.join(_path, '*'))
+        for thing in g:
+            if os.path.isfile(thing):
+                cprint(' ' * depth + os.path.basename(thing), 'green')
+            elif os.path.isdir(thing):
+                cprint(' ' * depth + os.path.basename(thing), 'cyan')
+                recurse(thing, depth + 2)
+    recurse(cmd_source())
+
+
+def cmdy_edit(args):
+    cmdfile = os.path.join(cmd_source(), *args)
+    if not os.path.isfile(cmdfile):
+        bail("That command doesn't exist.")
+    editor = os.environ.get('EDITOR', 'nano')
+    check_call(editor + " " + cmdfile, shell=True)
+
+
+if __name__ == '__main__':
+    main()
